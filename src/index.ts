@@ -41,7 +41,6 @@ interface ReviewOptions {
 }
 
 interface UploadOptions {
-  repo: string;
   workspace: string;
   dryRun: boolean;
 }
@@ -175,7 +174,6 @@ Review options:
   <context-file>+        One or more files that define project context for the LLM review
 
 Upload options:
-  --repo <repo>          Hugging Face dataset repo
   --workspace <dir>      Existing workspace created by collect
   --dry-run              Show upload stats without uploading
 `);
@@ -287,23 +285,21 @@ function loadDenyPatterns(inputs: string[]): RegExp[] {
 }
 
 function parseUploadArgs(args: string[]): UploadOptions {
-  let repo = "";
   let workspace = "";
   let dryRun = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === "--repo") repo = requireValue(args, ++i, "--repo");
-    else if (arg === "--workspace") workspace = path.resolve(requireValue(args, ++i, "--workspace"));
+    if (arg === "--workspace") workspace = path.resolve(requireValue(args, ++i, "--workspace"));
     else if (arg === "--dry-run") dryRun = true;
     else throw new Error(`Unknown upload option: ${arg}`);
   }
 
-  if (!repo || !workspace) {
-    throw new Error("upload requires --repo and --workspace");
+  if (!workspace) {
+    throw new Error("upload requires --workspace");
   }
 
-  return { repo, workspace, dryRun };
+  return { workspace, dryRun };
 }
 
 function requireValue(args: string[], index: number, flag: string): string {
@@ -1532,9 +1528,7 @@ function computeReviewKey(
 
 async function runUpload(options: UploadOptions): Promise<void> {
   const config = readWorkspaceConfig(options.workspace);
-  if (config.repo !== options.repo) {
-    throw new Error(`Workspace repo ${config.repo} does not match upload repo ${options.repo}`);
-  }
+  const repo = config.repo;
 
   const localManifest = loadLocalManifest(workspacePath(options.workspace, LOCAL_MANIFEST_FILE));
   if (localManifest.size === 0) {
@@ -1550,9 +1544,7 @@ async function runUpload(options: UploadOptions): Promise<void> {
   let unchanged = 0;
 
   const remoteManifestPath = workspacePath(options.workspace, REMOTE_MANIFEST_CACHE_FILE);
-  const remoteManifest = options.dryRun
-    ? new Map<string, RemoteManifestEntry>()
-    : await downloadRemoteManifest(options.repo, remoteManifestPath);
+  const remoteManifest = await downloadRemoteManifest(repo, remoteManifestPath);
 
   for (const entry of entries) {
     const reviewFile = loadReviewFile(workspacePath(options.workspace, "review", `${entry.file}.review.json`));
@@ -1604,7 +1596,7 @@ async function runUpload(options: UploadOptions): Promise<void> {
     return;
   }
 
-  await ensureDatasetRepo(options.repo);
+  await ensureDatasetRepo(repo);
 
   const updatedManifest = new Map(remoteManifest);
   let uploaded = 0;
@@ -1621,7 +1613,7 @@ async function runUpload(options: UploadOptions): Promise<void> {
     if (!fs.existsSync(localFile)) continue;
 
     process.stdout.write(`\r[${uploaded + 1}/${approved}] ${entry.file}`);
-    await uploadFile(options.repo, localFile, entry.file);
+    await uploadFile(repo, localFile, entry.file);
     updatedManifest.set(entry.file, {
       file: entry.file,
       source_hash: entry.source_hash,
@@ -1637,7 +1629,7 @@ async function runUpload(options: UploadOptions): Promise<void> {
   const manifestUploadPath = workspacePath(options.workspace, REMOTE_MANIFEST_FILE);
   fs.writeFileSync(manifestUploadPath, manifestContents.length > 0 ? `${manifestContents}\n` : "");
   process.stdout.write(`\r[manifest] uploading ${REMOTE_MANIFEST_FILE}`);
-  await uploadFile(options.repo, manifestUploadPath, REMOTE_MANIFEST_FILE);
+  await uploadFile(repo, manifestUploadPath, REMOTE_MANIFEST_FILE);
 
   console.log();
   console.log(`Uploaded: ${uploaded}`);
@@ -1652,7 +1644,12 @@ function isUploadApproved(result: ChunkReviewResult): boolean {
 }
 
 async function ensureDatasetRepo(repo: string): Promise<void> {
-  const [owner, name] = splitRepoId(repo);
+  // huggingface-cli repo create expects just the repo name, with --organization
+  // for namespaced repos. For personal accounts (user/repo), pass just the name.
+  const slash = repo.indexOf("/");
+  const name = slash === -1 ? repo : repo.slice(slash + 1);
+  const owner = slash === -1 ? undefined : repo.slice(0, slash);
+
   const args = ["repo", "create", name, "--type", "dataset", "-y"];
   if (owner) args.splice(4, 0, "--organization", owner);
 
@@ -1662,14 +1659,11 @@ async function ensureDatasetRepo(repo: string): Promise<void> {
     if (text.includes("already exists") || text.includes("You already created") || text.includes("409")) {
       return;
     }
+    // If creation failed for another reason, the first upload will fail with
+    // a clear error, so we do not throw here.
   }
 }
 
-function splitRepoId(repo: string): [string | undefined, string] {
-  const slash = repo.indexOf("/");
-  if (slash === -1) return [undefined, repo];
-  return [repo.slice(0, slash), repo.slice(slash + 1)];
-}
 
 async function uploadFile(repo: string, localFile: string, remoteFile: string): Promise<void> {
   const result = await runCommand("huggingface-cli", [

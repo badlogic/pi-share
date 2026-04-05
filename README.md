@@ -63,7 +63,7 @@ The CLI checks at startup and prints install instructions if missing.
 ```bash
 pi-share collect --cwd /path/to/project --repo user/dataset --workspace ./workspace
 pi-share review --workspace ./workspace README.md docs/design.md
-pi-share upload --repo user/dataset --workspace ./workspace
+pi-share upload --workspace ./workspace
 ```
 
 ## Commands
@@ -110,12 +110,12 @@ Output per session:
 ### `upload`
 
 ```bash
-pi-share upload --repo user/dataset --workspace ./workspace [--dry-run]
+pi-share upload --workspace ./workspace [--dry-run]
 ```
 
 - `--dry-run`: print stats without uploading
 
-Requires review data for every session. Refuses to upload if any session has no review sidecar. Uploads only sessions where `shareable === "yes"`, `missed_sensitive_data === "no"`, and `about_project !== "no"`. Skips unchanged sessions.
+Repo is read from `workspace.json`. Requires review data for every session. Refuses to upload if any session has no review sidecar. Uploads only sessions where `shareable === "yes"`, `missed_sensitive_data === "no"`, and `about_project !== "no"`. Skips unchanged sessions.
 
 ## Verifying results
 
