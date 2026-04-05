@@ -86,7 +86,7 @@ Skips sessions whose `source_hash` matches local workspace or remote manifest. R
 
 ```bash
 pi-share review --workspace ./workspace [--provider anthropic] [--model claude-sonnet-4-5] \
-  [--parallel 4] [--deny deny.txt] [--deny "earendil|finances"] README.md AGENTS.md
+  [--parallel 4] [--deny deny.txt] [--deny "private-project|finances"] README.md AGENTS.md
 ```
 
 - `--provider <name>`: pi provider override
@@ -116,6 +116,23 @@ pi-share upload --repo user/dataset --workspace ./workspace [--dry-run]
 - `--dry-run`: print stats without uploading
 
 Requires review data for every session. Refuses to upload if any session has no review sidecar. Uploads only sessions where `shareable === "yes"`, `missed_sensitive_data === "no"`, and `about_project !== "no"`. Skips unchanged sessions.
+
+## Verifying results
+
+After `review` completes, spot-check the results. Search the redacted sessions for keywords related to private topics you know appear in your sessions:
+
+```bash
+# find sessions containing a keyword
+rg -l 'my-private-project' workspace/redacted/
+
+# check if those sessions are blocked
+for f in $(rg -l 'my-private-project' workspace/redacted/); do
+  base=$(basename "$f")
+  python3 -c "import json; d=json.load(open('workspace/review/${base}.review.json')); a=d['aggregate']; print(a['shareable'], a['about_project'], base)"
+done
+```
+
+If any session containing private content is marked `shareable=yes`, add it to `--deny` and rerun `review`. Common things to search for: private project names, personal contacts, private infrastructure, financial references, non-OSS work topics.
 
 ## Workspace layout
 
