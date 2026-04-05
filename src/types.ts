@@ -131,7 +131,7 @@ export interface SecretPattern {
 export const CHARS_PER_REVIEW_TOKEN = 5;
 export const REVIEW_TOKEN_LIMIT = 100_000;
 export const REVIEW_CHUNK_CHAR_LIMIT = CHARS_PER_REVIEW_TOKEN * REVIEW_TOKEN_LIMIT;
-export const REVIEW_PROMPT_VERSION = 3;
+export const REVIEW_PROMPT_VERSION = 4;
 export const REMOTE_MANIFEST_FILE = "manifest.jsonl";
 export const WORKSPACE_CONFIG_FILE = "workspace.json";
 export const LOCAL_MANIFEST_FILE = "manifest.local.jsonl";

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { bold, cyan, green, yellow } from "./colors.ts";
+import { bold, cyan, green, red, yellow } from "./colors.ts";
 import { REVIEW_CHUNK_CHAR_LIMIT, REVIEW_PROMPT_VERSION } from "./types.ts";
 import type {
   AboutProject,
@@ -200,11 +200,33 @@ export async function runReview(options: ReviewOptions): Promise<void> {
     startNext();
   });
 
+  const summary = summarizeReviews(options.workspace, sessionFiles);
+
   console.log();
   console.log(`${bold("Reviewed:")} ${green(String(reviewed))}`);
   console.log(`${bold("Denied by pattern:")} ${yellow(String(denied))}`);
   console.log(`${bold("Skipped existing review:")} ${skipped}`);
   console.log(`${bold("Review sidecars:")} ${workspacePath(options.workspace, "review")}`);
+
+  console.log();
+  console.log(bold("Review summary"));
+  console.log(`${bold("  Uploadable:")} ${green(String(summary.uploadable))}/${summary.total}`);
+  console.log(`${bold("  Blocked:")} ${red(String(summary.blocked))}/${summary.total}`);
+  console.log(`${bold("  shareable=yes:")} ${summary.shareable.yes}`);
+  console.log(`${bold("  shareable=manual_review:")} ${yellow(String(summary.shareable.manual_review))}`);
+  console.log(`${bold("  shareable=no:")} ${red(String(summary.shareable.no))}`);
+  console.log(`${bold("  about_project=yes:")} ${summary.about.yes}`);
+  console.log(`${bold("  about_project=mixed:")} ${yellow(String(summary.about.mixed))}`);
+  console.log(`${bold("  about_project=no:")} ${red(String(summary.about.no))}`);
+  console.log(`${bold("  missed_sensitive_data=no:")} ${summary.missed.no}`);
+  console.log(`${bold("  missed_sensitive_data=maybe:")} ${yellow(String(summary.missed.maybe))}`);
+  console.log(`${bold("  missed_sensitive_data=yes:")} ${red(String(summary.missed.yes))}`);
+  if (summary.topReasons.length > 0) {
+    console.log(bold("  Top reasons:"));
+    for (const [reason, count] of summary.topReasons) {
+      console.log(`    ${count}x ${reason}`);
+    }
+  }
 
   if (hasImages) {
     const imagesDir = workspacePath(options.workspace, "images");
@@ -216,6 +238,53 @@ export async function runReview(options: ReviewOptions): Promise<void> {
       console.log(yellow("Rejecting an image rejects the entire session that contains it."));
     }
   }
+}
+
+function summarizeReviews(workspace: string, sessionFiles: string[]): {
+  total: number;
+  uploadable: number;
+  blocked: number;
+  shareable: Record<Shareable, number>;
+  about: Record<AboutProject, number>;
+  missed: Record<MissedSensitiveData, number>;
+  topReasons: Array<[string, number]>;
+} {
+  const shareable: Record<Shareable, number> = { yes: 0, no: 0, manual_review: 0 };
+  const about: Record<AboutProject, number> = { yes: 0, no: 0, mixed: 0 };
+  const missed: Record<MissedSensitiveData, number> = { yes: 0, no: 0, maybe: 0 };
+  const reasonCounts = new Map<string, number>();
+  let uploadable = 0;
+  let total = 0;
+
+  for (const file of sessionFiles) {
+    const review = loadReviewFile(workspacePath(workspace, "review", `${file}.review.json`));
+    if (!review) continue;
+    total++;
+    const aggregate = review.aggregate;
+    shareable[aggregate.shareable]++;
+    about[aggregate.about_project]++;
+    missed[aggregate.missed_sensitive_data]++;
+    if (aggregate.shareable === "yes" && aggregate.missed_sensitive_data === "no" && aggregate.about_project !== "no") {
+      uploadable++;
+    }
+    for (const part of aggregate.flagged_parts) {
+      reasonCounts.set(part.reason, (reasonCounts.get(part.reason) ?? 0) + 1);
+    }
+  }
+
+  const topReasons = [...reasonCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 8);
+
+  return {
+    total,
+    uploadable,
+    blocked: total - uploadable,
+    shareable,
+    about,
+    missed,
+    topReasons,
+  };
 }
 
 function resolvePiDefaults(provider?: string, model?: string, thinking?: string): { provider: string; model: string; thinking: string } {
@@ -361,6 +430,8 @@ function createReviewPrompt(chunkIndex: number, chunkCount: number, hasImages: b
     "- missed_sensitive_data=maybe if you suspect it but are not confident.",
     "- Pay special attention to possible leaked API keys, bearer tokens, OAuth tokens, secret-like strings, and credentials that deterministic redaction may have missed.",
     "- Email addresses in git-related public OSS context are acceptable by default. Examples: commit author lines, public git metadata, repository history, issue or PR discussions about public contributors. Do NOT flag those by themselves as missed sensitive data.",
+    "- Local filesystem paths inside the current OSS project are acceptable by default. Do NOT flag project-local paths, workspace paths, temporary screenshot paths, or username-like path components by themselves.",
+    "- Only flag paths or local machine details when they clearly point to unrelated private work, auth files, mail, finance, personal documents, private infrastructure, or other non-OSS sensitive context.",
     "- Do NOT treat assistant thinking blocks or provider thinking signatures as missed sensitive data by themselves. They are expected to remain in the dataset unless they contain other clearly sensitive content.",
     "- Do NOT flag preserved embedded images merely because the image payload remains. Only flag them if there is specific evidence that the image likely contains sensitive content.",
     "- flagged_parts should quote short redacted excerpts only. Do not invent evidence.",
