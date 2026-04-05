@@ -50,6 +50,10 @@ python3 -m pip install --user "huggingface_hub[cli]"
 huggingface-cli login
 ```
 
+When logging in:
+- create a token at https://huggingface.co/settings/tokens with **write** scope
+- say **Y** when asked to add the token as a git credential (HF dataset repos are git-backed, uploads use git credentials)
+
 `review` needs `pi`:
 
 ```bash
