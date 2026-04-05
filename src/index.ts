@@ -1598,11 +1598,16 @@ async function runUpload(options: UploadOptions): Promise<void> {
 
   await ensureDatasetRepo(repo);
 
-  const updatedManifest = new Map(remoteManifest);
-  let uploaded = 0;
+  // Stage approved files into a temporary upload directory so we can upload
+  // everything in a single commit instead of one commit per file.
+  const uploadDir = workspacePath(options.workspace, "_upload_staging");
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+  fs.mkdirSync(uploadDir, { recursive: true });
 
-  for (let index = 0; index < entries.length; index++) {
-    const entry = entries[index];
+  const updatedManifest = new Map(remoteManifest);
+  let staged = 0;
+
+  for (const entry of entries) {
     const reviewFile = loadReviewFile(workspacePath(options.workspace, "review", `${entry.file}.review.json`));
     if (!reviewFile || !isUploadApproved(reviewFile.aggregate)) continue;
 
@@ -1612,27 +1617,32 @@ async function runUpload(options: UploadOptions): Promise<void> {
     const localFile = workspacePath(options.workspace, "redacted", entry.file);
     if (!fs.existsSync(localFile)) continue;
 
-    process.stdout.write(`\r[${uploaded + 1}/${approved}] ${entry.file}`);
-    await uploadFile(repo, localFile, entry.file);
+    fs.copyFileSync(localFile, path.join(uploadDir, entry.file));
     updatedManifest.set(entry.file, {
       file: entry.file,
       source_hash: entry.source_hash,
       redacted_hash: entry.redacted_hash,
     });
-    uploaded++;
+    staged++;
   }
 
+  // Write manifest into the staging directory
   const manifestContents = [...updatedManifest.values()]
     .sort((a, b) => a.file.localeCompare(b.file))
     .map((entry) => JSON.stringify(entry))
     .join("\n");
-  const manifestUploadPath = workspacePath(options.workspace, REMOTE_MANIFEST_FILE);
-  fs.writeFileSync(manifestUploadPath, manifestContents.length > 0 ? `${manifestContents}\n` : "");
-  process.stdout.write(`\r[manifest] uploading ${REMOTE_MANIFEST_FILE}`);
-  await uploadFile(repo, manifestUploadPath, REMOTE_MANIFEST_FILE);
+  fs.writeFileSync(path.join(uploadDir, REMOTE_MANIFEST_FILE), manifestContents.length > 0 ? `${manifestContents}\n` : "");
 
-  console.log();
-  console.log(`Uploaded: ${uploaded}`);
+  console.log(`Staged ${staged} files for upload`);
+  console.log("Uploading...");
+
+  await uploadFolder(repo, uploadDir);
+
+  // Copy manifest back to workspace
+  fs.copyFileSync(path.join(uploadDir, REMOTE_MANIFEST_FILE), workspacePath(options.workspace, REMOTE_MANIFEST_FILE));
+  fs.rmSync(uploadDir, { recursive: true, force: true });
+
+  console.log(`Uploaded: ${staged}`);
   console.log(`Updated remote manifest: ${REMOTE_MANIFEST_FILE}`);
 }
 
@@ -1665,18 +1675,19 @@ async function ensureDatasetRepo(repo: string): Promise<void> {
 }
 
 
-async function uploadFile(repo: string, localFile: string, remoteFile: string): Promise<void> {
+async function uploadFolder(repo: string, localDir: string): Promise<void> {
   const result = await runCommand("huggingface-cli", [
     "upload",
     repo,
-    localFile,
-    remoteFile,
+    localDir,
+    ".",
     "--repo-type",
     "dataset",
-    "--quiet",
+    "--commit-message",
+    `pi-share-hf upload ${new Date().toISOString()}`,
   ]);
   if (!result.ok) {
-    throw new Error(`Upload failed for ${localFile} -> ${remoteFile}: ${result.stderr || result.stdout}`);
+    throw new Error(`Upload failed: ${result.stderr || result.stdout}`);
   }
 }
 
