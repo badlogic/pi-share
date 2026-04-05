@@ -1,0 +1,17 @@
+{
+  "name": "pi-session-redactor",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "pi-share": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "tsgo --noEmit && node --experimental-strip-types src/index.ts --help >/dev/null && node --experimental-strip-types src/index.ts collect --help >/dev/null && node --experimental-strip-types src/index.ts review --help >/dev/null && node --experimental-strip-types src/index.ts upload --help >/dev/null"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@typescript/native-preview": "7.0.0-dev.20260120.1",
+    "typescript": "^5.9.2"
+  }
+}
