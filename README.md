@@ -83,12 +83,15 @@ set -e
 pi-share-hf collect --cwd . --repo myuser/my-project-sessions --workspace pi-sessions \
   --secret secrets.txt
 pi-share-hf review --workspace pi-sessions --parallel 4 \
+  --provider openai-codex --model gpt-5.4 --thinking low \
   --deny deny.txt \
   README.md AGENTS.md
 pi-share-hf upload --workspace pi-sessions
 ```
 
 Where `secrets.txt` has one secret per line (API keys, tokens, passwords) and `deny.txt` has one regex per line for topics that should never be shared (private project names, personal contacts, etc.).
+
+Review uses a lot of tokens. Each session chunk can be up to 100k tokens, and you are reviewing every session. Pick a model that balances cost and quality. `--parallel` controls concurrency.
 
 The positional arguments after the flags (`README.md AGENTS.md` above) are project context files. The review LLM reads these to understand what the project is about, so it can judge whether a session is related to the project or contains off-topic private work. Pass files that describe the project scope: `README.md`, `AGENTS.md`, design docs, contributing guides. The more context, the better the LLM can distinguish project work from unrelated activity.
 
