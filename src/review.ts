@@ -118,40 +118,45 @@ export async function runReview(options: ReviewOptions): Promise<void> {
     const chunkFiles = await splitIntoReviewChunks(item.redactedPath, chunkDir);
     const chunkResults: SessionReviewFile["chunks"] = [];
 
+    const reviewImageDir = path.join(chunkDir, "images");
     let imageFiles: string[] = [];
     if (hasImages) {
-      imageFiles = extractImagesFromSession(item.redactedPath, workspacePath(options.workspace, "images"), item.file);
+      imageFiles = extractImagesFromSession(item.redactedPath, reviewImageDir, item.file);
     }
 
-    for (let i = 0; i < chunkFiles.length; i++) {
-      const chunkFile = chunkFiles[i];
-      const chunkText = fs.readFileSync(chunkFile, "utf-8");
-      try {
-        const result = await reviewChunkWithPi(
-          config.cwd,
-          contextFiles,
-          chunkFile,
-          i + 1,
-          chunkFiles.length,
-          options.provider,
-          options.model,
-          options.thinking,
-          imageFiles,
-        );
-        chunkResults.push({
-          chunk_index: i + 1,
-          chunk_file: chunkFile,
-          chars: chunkText.length,
-          result,
-        });
-      } catch (error) {
-        chunkResults.push({
-          chunk_index: i + 1,
-          chunk_file: chunkFile,
-          chars: chunkText.length,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    try {
+      for (let i = 0; i < chunkFiles.length; i++) {
+        const chunkFile = chunkFiles[i];
+        const chunkText = fs.readFileSync(chunkFile, "utf-8");
+        try {
+          const result = await reviewChunkWithPi(
+            config.cwd,
+            contextFiles,
+            chunkFile,
+            i + 1,
+            chunkFiles.length,
+            options.provider,
+            options.model,
+            options.thinking,
+            imageFiles,
+          );
+          chunkResults.push({
+            chunk_index: i + 1,
+            chunk_file: chunkFile,
+            chars: chunkText.length,
+            result,
+          });
+        } catch (error) {
+          chunkResults.push({
+            chunk_index: i + 1,
+            chunk_file: chunkFile,
+            chars: chunkText.length,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
+    } finally {
+      fs.rmSync(reviewImageDir, { recursive: true, force: true });
     }
 
     return {
@@ -200,6 +205,10 @@ export async function runReview(options: ReviewOptions): Promise<void> {
     startNext();
   });
 
+  if (hasImages) {
+    syncApprovedImages(options.workspace, sessionFiles);
+  }
+
   const summary = summarizeReviews(options.workspace, sessionFiles);
 
   console.log();
@@ -237,6 +246,22 @@ export async function runReview(options: ReviewOptions): Promise<void> {
       console.log(yellow("If an image should not be shared, reject its session with: pi-share-hf reject <image-path>"));
       console.log(yellow("Rejecting an image rejects the entire session that contains it."));
     }
+  }
+}
+
+function syncApprovedImages(workspace: string, sessionFiles: string[]): void {
+  const imagesDir = workspacePath(workspace, "images");
+  fs.rmSync(imagesDir, { recursive: true, force: true });
+  fs.mkdirSync(imagesDir, { recursive: true });
+
+  for (const file of sessionFiles) {
+    const review = loadReviewFile(workspacePath(workspace, "review", `${file}.review.json`));
+    if (!review || review.aggregate.shareable !== "yes") continue;
+
+    const redactedPath = workspacePath(workspace, "redacted", file);
+    if (!fs.existsSync(redactedPath)) continue;
+
+    extractImagesFromSession(redactedPath, imagesDir, file);
   }
 }
 

@@ -168,7 +168,7 @@ pi-share-hf collect [--workspace .pi/hf-sessions] \
 
 Sessions are serialized to plain-text transcripts, chunked, and attached to `pi` via `@file`. Existing review sidecars are reused when redacted hash, context hashes, provider, model, and prompt version all match.
 
-If images are preserved, `collect` also extracts them to `workspace/images/` and tells you to inspect them manually. The review LLM receives those images too. If your chosen model does not support images, preserved images are not meaningfully reviewed.
+If images are preserved, `collect` extracts them for the review LLM. After review finishes, `workspace/images/` retains only images from sessions with `shareable === "yes"`. Images from sessions marked `shareable === "no"` or `shareable === "manual_review"` are deleted. If your chosen model does not support images, preserved images are not meaningfully reviewed.
 
 Output per session includes:
 - `about_project`: `yes` | `no` | `mixed`
@@ -234,7 +234,7 @@ If any session containing private content is marked `shareable=yes`, add it to `
   reports/        # private deterministic findings
   review/         # private LLM review sidecars
   review-chunks/  # private transcript chunks
-  images/         # extracted preserved images for manual inspection
+  images/         # extracted preserved images from sessions with shareable=yes
   reject.txt      # one rejected session filename per line
 ```
 
