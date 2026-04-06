@@ -1,10 +1,8 @@
 {
   "name": "pi-share-hf",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
-  "bin": {
-    "pi-share-hf": "./dist/index.js"
-  },
+  "bin": "dist/index.js",
   "files": [
     "dist",
     "README.md"
