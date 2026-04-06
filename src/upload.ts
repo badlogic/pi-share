@@ -109,6 +109,7 @@ export async function runUpload(options: UploadOptions): Promise<void> {
     updatedManifest.set(entry.file, {
       file: entry.file,
       source_hash: entry.source_hash,
+      redaction_key: entry.redaction_key,
       redacted_hash: entry.redacted_hash,
     });
     staged++;

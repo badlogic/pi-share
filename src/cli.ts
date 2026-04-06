@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import type { CollectOptions, InitOptions, RejectOptions, ReviewOptions, UploadOptions } from "./types.ts";
+import type { CollectOptions, GrepOptions, InitOptions, ListOptions, RejectOptions, ReviewOptions, UploadOptions } from "./types.ts";
 import { loadDenyPatterns } from "./review.ts";
 
 export function printUsage(): void {
@@ -13,6 +13,8 @@ Usage:
   pi-share-hf review [--workspace <dir>] [options] [context-file...]
   pi-share-hf upload [--workspace <dir>]
   pi-share-hf reject [--workspace <dir>] <image-or-session>
+  pi-share-hf list [--workspace <dir>] --uploadable
+  pi-share-hf grep [--workspace <dir>] [--ignore-case] <pattern>
 
 Commands:
   init      Create a workspace and store cwd/repo configuration
@@ -20,6 +22,8 @@ Commands:
   review    Rerun LLM review only on existing redacted sessions
   upload    Upload approved redacted sessions and update manifest.jsonl in the dataset repo
   reject    Add a session to workspace/reject.txt so upload always skips it
+  list      List sessions matching built-in filters
+  grep      Ripgrep only the uploadable session set
 
 Init options:
   --cwd <dir>            Working directory whose pi sessions should be collected (default: .)
@@ -58,6 +62,15 @@ Upload options:
 Reject options:
   --workspace <dir>      Existing workspace (default: .pi/hf-sessions)
   <image-or-session>     Extracted image filename or session filename to reject
+
+List options:
+  --workspace <dir>      Existing workspace (default: .pi/hf-sessions)
+  --uploadable           List only sessions that would be uploaded
+
+Grep options:
+  --workspace <dir>      Existing workspace (default: .pi/hf-sessions)
+  --ignore-case, -i      Case-insensitive search
+  <pattern>              Ripgrep pattern to run against uploadable sessions
 `);
 }
 
@@ -191,6 +204,40 @@ export function parseRejectArgs(args: string[]): RejectOptions {
   }
 
   return { workspace, target };
+}
+
+export function parseListArgs(args: string[]): ListOptions {
+  let workspace = path.resolve(".pi/hf-sessions");
+  let uploadable = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--workspace") workspace = path.resolve(requireValue(args, ++i, "--workspace"));
+    else if (arg === "--uploadable") uploadable = true;
+    else throw new Error(`Unknown list option: ${arg}`);
+  }
+
+  return { workspace, uploadable };
+}
+
+export function parseGrepArgs(args: string[]): GrepOptions {
+  let workspace = path.resolve(".pi/hf-sessions");
+  let pattern = "";
+  let ignoreCase = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--workspace") workspace = path.resolve(requireValue(args, ++i, "--workspace"));
+    else if (arg === "--ignore-case" || arg === "-i") ignoreCase = true;
+    else if (!pattern) pattern = arg;
+    else throw new Error(`Unknown grep option: ${arg}`);
+  }
+
+  if (!pattern) {
+    throw new Error("grep requires a pattern");
+  }
+
+  return { workspace, pattern, ignoreCase };
 }
 
 function requireValue(args: string[], index: number, flag: string): string {

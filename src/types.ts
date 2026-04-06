@@ -55,6 +55,17 @@ export interface RejectOptions {
   target: string;
 }
 
+export interface ListOptions {
+  workspace: string;
+  uploadable: boolean;
+}
+
+export interface GrepOptions {
+  workspace: string;
+  pattern: string;
+  ignoreCase: boolean;
+}
+
 export interface Finding {
   detector: DetectorName;
   severity: Severity;
@@ -74,6 +85,7 @@ export interface LocalManifestEntry {
   file: string;
   source_file: string;
   source_hash: string;
+  redaction_key: string;
   redacted_hash: string;
   entry_count: number;
   findings: number;
@@ -83,6 +95,7 @@ export interface LocalManifestEntry {
 export interface RemoteManifestEntry {
   file: string;
   source_hash: string;
+  redaction_key?: string;
   redacted_hash: string;
 }
 
@@ -132,6 +145,7 @@ export const CHARS_PER_REVIEW_TOKEN = 5;
 export const REVIEW_TOKEN_LIMIT = 100_000;
 export const REVIEW_CHUNK_CHAR_LIMIT = CHARS_PER_REVIEW_TOKEN * REVIEW_TOKEN_LIMIT;
 export const REVIEW_PROMPT_VERSION = 4;
+export const REDACTION_VERSION = 1;
 export const REMOTE_MANIFEST_FILE = "manifest.jsonl";
 export const WORKSPACE_CONFIG_FILE = "workspace.json";
 export const LOCAL_MANIFEST_FILE = "manifest.local.jsonl";

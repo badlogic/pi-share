@@ -22,12 +22,21 @@ export async function hashContextFiles(files: string[]): Promise<Record<string, 
   return hashes;
 }
 
+export function computeDenyHash(patterns: RegExp[]): string {
+  const data = patterns
+    .map((pattern) => `${pattern.source}/${pattern.flags}`)
+    .sort()
+    .join("\n");
+  return sha256Text(data);
+}
+
 export function computeReviewKey(
   redactedHash: string,
   contextHashes: Record<string, string>,
   provider?: string,
   model?: string,
   thinking?: string,
+  denyHash?: string,
 ): string {
   return sha256Text(JSON.stringify({
     redactedHash,
@@ -35,6 +44,7 @@ export function computeReviewKey(
     provider,
     model,
     thinking,
+    denyHash,
     promptVersion: REVIEW_PROMPT_VERSION,
     chunkCharLimit: REVIEW_CHUNK_CHAR_LIMIT,
   }));

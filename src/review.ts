@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { bold, cyan, green, red, yellow } from "./colors.ts";
+import { bold, cyan, dim, green, red, yellow } from "./colors.ts";
 import { REVIEW_CHUNK_CHAR_LIMIT, REVIEW_PROMPT_VERSION } from "./types.ts";
 import type {
   AboutProject,
@@ -15,7 +15,7 @@ import type {
 } from "./types.ts";
 import { extractImagesFromSession, splitIntoReviewChunks } from "./review-serialize.ts";
 import { runCommand } from "./process.ts";
-import { computeReviewKey, hashContextFiles, loadReviewFile } from "./review-state.ts";
+import { computeDenyHash, computeReviewKey, hashContextFiles, loadReviewFile } from "./review-state.ts";
 import { isRecord, readWorkspaceConfig, resetReviewDir, sha256File, workspacePath } from "./workspace.ts";
 
 export async function runReview(options: ReviewOptions): Promise<void> {
@@ -31,6 +31,7 @@ export async function runReview(options: ReviewOptions): Promise<void> {
   }
 
   const contextHashes = await hashContextFiles(contextFiles);
+  const denyHash = computeDenyHash(options.denyPatterns);
   const redactedDir = workspacePath(options.workspace, "redacted");
   let sessionFiles = fs.readdirSync(redactedDir).filter((file) => file.endsWith(".jsonl")).sort();
   if (options.session) {
@@ -48,24 +49,11 @@ export async function runReview(options: ReviewOptions): Promise<void> {
   const hasImages = !config.noImages;
   const resolved = resolvePiDefaults(options.provider, options.model, options.thinking);
 
-  console.log(`${bold("Workspace:")} ${options.workspace}`);
-  console.log(`${bold("Redacted session files:")} ${cyan(String(sessionFiles.length))}`);
-  console.log(`${bold("Context files:")} ${contextFiles.length}`);
-  console.log(`${bold("Provider:")} ${resolved.provider}`);
-  console.log(`${bold("Model:")} ${resolved.model}`);
-  console.log(`${bold("Thinking:")} ${resolved.thinking}`);
-  console.log(`${bold("Parallel:")} ${options.parallel}`);
-  console.log(`${bold("Deny patterns:")} ${options.denyPatterns.length}`);
-
-  const confirmed = await confirmPrompt("\nProceed with LLM review? (y/n) ");
-  if (!confirmed) {
-    console.log("Aborted.");
-    return;
-  }
-
   let reviewed = 0;
   let skipped = 0;
-  let denied = 0;
+  let deniedByPattern = 0;
+  let deniedBySecrets = 0;
+  const reviewCandidateSessions = sessionFiles.length;
 
   interface ReviewWorkItem {
     file: string;
@@ -80,12 +68,19 @@ export async function runReview(options: ReviewOptions): Promise<void> {
   for (const file of sessionFiles) {
     const redactedPath = workspacePath(options.workspace, "redacted", file);
     const reviewPath = workspacePath(options.workspace, "review", `${file}.review.json`);
+    const reportPath = workspacePath(options.workspace, "reports", `${file}.report.jsonl`);
     const redactedHash = await sha256File(redactedPath);
-    const reviewKey = computeReviewKey(redactedHash, contextHashes, options.provider, options.model, options.thinking);
+    const reviewKey = computeReviewKey(redactedHash, contextHashes, options.provider, options.model, options.thinking, denyHash);
     const existingReview = loadReviewFile(reviewPath);
 
-    if (existingReview?.review_key === reviewKey) {
-      skipped++;
+    if (hasSecretRedactionFinding(reportPath)) {
+      const denyReview = createDenyReview(
+        file, contextFiles, contextHashes, redactedHash, reviewKey,
+        options.provider, options.model, "deterministic-secret-redaction",
+        "Deterministic secret redaction triggered for this session.",
+      );
+      fs.writeFileSync(reviewPath, `${JSON.stringify(denyReview, null, 2)}\n`);
+      deniedBySecrets++;
       continue;
     }
 
@@ -95,20 +90,44 @@ export async function runReview(options: ReviewOptions): Promise<void> {
       if (matchedPattern) {
         const denyReview = createDenyReview(
           file, contextFiles, contextHashes, redactedHash, reviewKey,
-          options.provider, options.model, matchedPattern.source,
+          options.provider, options.model, "deny-pattern", matchedPattern.source,
         );
         fs.writeFileSync(reviewPath, `${JSON.stringify(denyReview, null, 2)}\n`);
-        denied++;
+        deniedByPattern++;
         continue;
       }
+    }
+
+    if (existingReview?.review_key === reviewKey) {
+      skipped++;
+      continue;
     }
 
     workItems.push({ file, redactedPath, reviewPath, redactedHash, reviewKey });
   }
 
-  console.log(`${bold("Skipped existing:")} ${skipped}`);
-  console.log(`${bold("Denied by pattern:")} ${denied}`);
-  console.log(`${bold("Queued for LLM review:")} ${cyan(String(workItems.length))}`);
+  console.log();
+  console.log(bold("Filtering"));
+  console.log(`  ${bold("Review candidate sessions:")} ${cyan(String(reviewCandidateSessions))}`);
+  console.log(`  ${bold("Denied by secret redaction (--secret, --env-file, token patterns):")} ${yellow(String(deniedBySecrets))}`);
+  console.log(`  ${bold("Denied by --deny pattern:")} ${yellow(String(deniedByPattern))}`);
+  console.log(`  ${bold("Eligible for review:")} ${green(String(workItems.length + skipped))}`);
+
+  console.log();
+  console.log(bold("LLM review"));
+  console.log(`  ${bold("Provider:")} ${resolved.provider}`);
+  console.log(`  ${bold("Model:")} ${resolved.model}`);
+  console.log(`  ${bold("Thinking:")} ${resolved.thinking}`);
+  console.log(`  ${bold("Parallel:")} ${options.parallel}`);
+  console.log(`  ${bold("Context files:")} ${contextFiles.length}`);
+  console.log(`  ${bold("Reviewed sessions:")} ${skipped}`);
+  console.log(`  ${bold("Unreviewed sessions:")} ${cyan(String(workItems.length))}`);
+
+  const confirmed = await confirmPrompt("\nContinue with LLM review? (y/n) ");
+  if (!confirmed) {
+    console.log("Aborted.");
+    return;
+  }
 
   const parallel = Math.max(1, options.parallel);
 
@@ -177,9 +196,14 @@ export async function runReview(options: ReviewOptions): Promise<void> {
 
   let nextIndex = 0;
   let inflight = 0;
+  let accepted = 0;
+  let blocked = 0;
+  const totalToReview = workItems.length;
 
   function printProgress(): void {
-    process.stdout.write(`\r[${reviewed + denied + skipped}/${sessionFiles.length}] reviewed=${reviewed} denied=${denied} inflight=${inflight}`);
+    if (totalToReview === 0) return;
+    const current = Math.min(reviewed + inflight, totalToReview);
+    process.stdout.write(`\r[${current}/${totalToReview}] inflight=${inflight} accepted=${accepted} blocked=${blocked}`);
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -192,6 +216,11 @@ export async function runReview(options: ReviewOptions): Promise<void> {
           .then((result) => {
             fs.writeFileSync(item.reviewPath, `${JSON.stringify(result, null, 2)}\n`);
             reviewed++;
+            if (result.aggregate.shareable === "yes" && result.aggregate.missed_sensitive_data === "no" && result.aggregate.about_project !== "no") {
+              accepted++;
+            } else {
+              blocked++;
+            }
             inflight--;
             printProgress();
             startNext();
@@ -212,40 +241,30 @@ export async function runReview(options: ReviewOptions): Promise<void> {
   const summary = summarizeReviews(options.workspace, sessionFiles);
 
   console.log();
-  console.log(`${bold("Reviewed:")} ${green(String(reviewed))}`);
-  console.log(`${bold("Denied by pattern:")} ${yellow(String(denied))}`);
-  console.log(`${bold("Skipped existing review:")} ${skipped}`);
-  console.log(`${bold("Review sidecars:")} ${workspacePath(options.workspace, "review")}`);
-
-  console.log();
-  console.log(bold("Review summary"));
-  console.log(`${bold("  Uploadable:")} ${green(String(summary.uploadable))}/${summary.total}`);
-  console.log(`${bold("  Blocked:")} ${red(String(summary.blocked))}/${summary.total}`);
-  console.log(`${bold("  shareable=yes:")} ${summary.shareable.yes}`);
-  console.log(`${bold("  shareable=manual_review:")} ${yellow(String(summary.shareable.manual_review))}`);
-  console.log(`${bold("  shareable=no:")} ${red(String(summary.shareable.no))}`);
-  console.log(`${bold("  about_project=yes:")} ${summary.about.yes}`);
-  console.log(`${bold("  about_project=mixed:")} ${yellow(String(summary.about.mixed))}`);
-  console.log(`${bold("  about_project=no:")} ${red(String(summary.about.no))}`);
-  console.log(`${bold("  missed_sensitive_data=no:")} ${summary.missed.no}`);
-  console.log(`${bold("  missed_sensitive_data=maybe:")} ${yellow(String(summary.missed.maybe))}`);
-  console.log(`${bold("  missed_sensitive_data=yes:")} ${red(String(summary.missed.yes))}`);
-  if (summary.topReasons.length > 0) {
-    console.log(bold("  Top reasons:"));
-    for (const [reason, count] of summary.topReasons) {
-      console.log(`    ${count}x ${reason}`);
-    }
-  }
+  console.log(bold("Review results"));
+  console.log(`  ${bold("Reviewed by LLM:")} ${green(String(reviewed))}`);
+  console.log(`  ${bold("Uploadable:")} ${green(String(summary.uploadable))}`);
+  console.log(`  ${bold("Blocked:")} ${red(String(summary.blocked))}`);
+  console.log(`  ${bold("Review sidecars:")} ${workspacePath(options.workspace, "review")}`);
 
   if (hasImages) {
     const imagesDir = workspacePath(options.workspace, "images");
     const imageCount = fs.existsSync(imagesDir) ? fs.readdirSync(imagesDir).length : 0;
     if (imageCount > 0) {
-      console.log(`\n${bold("Extracted images:")} ${cyan(String(imageCount))} -> ${imagesDir}`);
-      console.log(yellow("Check these images manually for sensitive content before uploading."));
-      console.log(yellow("If an image should not be shared, reject its session with: pi-share-hf reject <image-path>"));
-      console.log(yellow("Rejecting an image rejects the entire session that contains it."));
+      console.log();
+      console.log(bold("Manual follow-up"));
+      console.log(`  ${bold("Extracted images:")} ${cyan(String(imageCount))} -> ${imagesDir}`);
+      console.log(`  ${bold("Reject by image:")} pi-share-hf reject <image-path>`);
+      console.log(dim("  Rejecting an image rejects the entire session that contains it."));
     }
+  }
+
+  console.log();
+  console.log(bold("Next step"));
+  if (summary.uploadable > 0) {
+    console.log(`  ${green("Run:")} pi-share-hf upload`);
+  } else {
+    console.log(`  ${yellow("No uploadable sessions.")}`);
   }
 }
 
@@ -561,6 +580,27 @@ function aggregateChunkReviews(chunks: SessionReviewFile["chunks"]): ChunkReview
   };
 }
 
+function hasSecretRedactionFinding(reportPath: string): boolean {
+  if (!fs.existsSync(reportPath)) return false;
+  const lines = fs.readFileSync(reportPath, "utf-8").split("\n");
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (!isRecord(parsed) || !Array.isArray(parsed.findings)) continue;
+      for (const finding of parsed.findings) {
+        if (!isRecord(finding)) continue;
+        if (finding.detector === "literal-secret" || finding.detector === "secret-pattern") {
+          return true;
+        }
+      }
+    } catch {
+      // Ignore malformed lines.
+    }
+  }
+  return false;
+}
+
 function createDenyReview(
   file: string,
   contextFiles: string[],
@@ -569,7 +609,8 @@ function createDenyReview(
   reviewKey: string,
   provider: string | undefined,
   model: string | undefined,
-  patternSource: string,
+  reason: string,
+  evidence: string,
 ): SessionReviewFile {
   return {
     file,
@@ -587,8 +628,8 @@ function createDenyReview(
       about_project: "no",
       shareable: "no",
       missed_sensitive_data: "no",
-      flagged_parts: [{ reason: "deny-pattern", evidence: patternSource }],
-      summary: `Session denied by pattern: ${patternSource}`,
+      flagged_parts: [{ reason, evidence }],
+      summary: `Session denied: ${reason}: ${evidence}`,
     },
   };
 }

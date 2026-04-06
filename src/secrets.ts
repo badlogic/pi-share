@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { SecretPattern } from "./types.ts";
@@ -76,4 +77,12 @@ export function countRegexMatches(text: string, regex: RegExp): number {
   let count = 0;
   while (globalRegex.exec(text) !== null) count++;
   return count;
+}
+
+export function computeSecretHash(envFile: string, secretInputs: string[]): string {
+  const secrets = buildLiteralSecrets(envFile, secretInputs)
+    .map((entry) => entry.value)
+    .sort()
+    .join("\n");
+  return `sha256:${createHash("sha256").update(secrets).digest("hex")}`;
 }

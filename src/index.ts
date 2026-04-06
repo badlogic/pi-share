@@ -1,11 +1,12 @@
 #!/usr/bin/env node --experimental-strip-types --no-warnings=ExperimentalWarning
 
-import { parseCollectArgs, parseInitArgs, parseRejectArgs, parseReviewArgs, parseUploadArgs, printUsage } from "./cli.ts";
+import { parseCollectArgs, parseGrepArgs, parseInitArgs, parseListArgs, parseRejectArgs, parseReviewArgs, parseUploadArgs, printUsage } from "./cli.ts";
 import { runCollect, runInit } from "./collect.ts";
 import { ensureStartupTools } from "./process.ts";
 import { runReject } from "./reject.ts";
 import { runReview } from "./review.ts";
 import { runUpload } from "./upload.ts";
+import { runGrep, runList } from "./query.ts";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -40,6 +41,16 @@ async function main(): Promise<void> {
 
   if (command === "reject") {
     await runReject(parseRejectArgs(args.slice(1)));
+    return;
+  }
+
+  if (command === "list") {
+    await runList(parseListArgs(args.slice(1)));
+    return;
+  }
+
+  if (command === "grep") {
+    await runGrep(parseGrepArgs(args.slice(1)));
     return;
   }
 

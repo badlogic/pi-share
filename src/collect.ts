@@ -5,9 +5,10 @@ import path from "node:path";
 import readline from "node:readline";
 import { bold, cyan, green } from "./colors.ts";
 import { Redactor } from "./redactor.ts";
+import { computeSecretHash } from "./secrets.ts";
 import { runReview } from "./review.ts";
 import type { CollectOptions, InitOptions, JsonObject, ReviewOptions } from "./types.ts";
-import { LOCAL_MANIFEST_FILE, REMOTE_MANIFEST_CACHE_FILE } from "./types.ts";
+import { LOCAL_MANIFEST_FILE, REDACTION_VERSION, REMOTE_MANIFEST_CACHE_FILE } from "./types.ts";
 import {
   cwdToSessionDirName,
   downloadRemoteManifest,
@@ -49,29 +50,27 @@ export async function runCollect(options: CollectOptions): Promise<void> {
     sessionFiles = sessionFiles.filter((file) => file.includes(options.session!));
   }
   const redactor = new Redactor(options.envFile, options.secrets, !!config.noImages);
+  const secretsHash = computeSecretHash(options.envFile, options.secrets);
   const localManifestPath = workspacePath(options.workspace, LOCAL_MANIFEST_FILE);
   const localManifest = loadLocalManifest(localManifestPath);
 
-  let skippedLocal = 0;
+  let reusedLocal = 0;
   let skippedRemote = 0;
   let processed = 0;
-  let totalFindings = 0;
+  let processedNew = 0;
+  let processedChanged = 0;
+  let sessionsWithSecretRedactions = 0;
 
-  console.log(`${bold("Workspace:")} ${options.workspace}`);
-  console.log(`${bold("CWD:")} ${config.cwd}`);
-  console.log(`${bold("Repo:")} ${config.repo}`);
-  console.log(`${bold("Images:")} ${config.noImages ? "stripped" : "preserved"}`);
-  console.log(`${bold("Session directory:")} ${sessionDir}`);
-  console.log(`${bold("Remote manifest entries:")} ${remoteManifest.size}`);
-  console.log(`${bold("Local manifest entries:")} ${localManifest.size}`);
-  console.log(`${bold("Session files:")} ${cyan(String(sessionFiles.length))}`);
+  console.log(bold("Collect"));
+  process.stdout.write(`  ${bold("Sessions found:")} 0`);
 
   for (let index = 0; index < sessionFiles.length; index++) {
     const file = sessionFiles[index];
-    process.stdout.write(`\r[${index + 1}/${sessionFiles.length}] processed=${processed} skipped-local=${skippedLocal} skipped-remote=${skippedRemote} ${file}`);
+    process.stdout.write(`\r  ${bold("Sessions found:")} ${index + 1}`);
 
     const inputPath = path.join(sessionDir, file);
     const sourceHash = await sha256File(inputPath);
+    const redactionKey = createRedactionKey(sourceHash, secretsHash, !!config.noImages);
     const remoteEntry = remoteManifest.get(file);
     const localEntry = localManifest.get(file);
     const redactedPath = workspacePath(options.workspace, "redacted", file);
@@ -80,15 +79,15 @@ export async function runCollect(options: CollectOptions): Promise<void> {
     if (
       !options.force
       && localEntry
-      && localEntry.source_hash === sourceHash
+      && localEntry.redaction_key === redactionKey
       && fs.existsSync(redactedPath)
       && fs.existsSync(reportPath)
     ) {
-      skippedLocal++;
+      reusedLocal++;
       continue;
     }
 
-    if (!options.force && remoteEntry?.source_hash === sourceHash) {
+    if (!options.force && remoteEntry?.redaction_key === redactionKey) {
       skippedRemote++;
       continue;
     }
@@ -98,17 +97,23 @@ export async function runCollect(options: CollectOptions): Promise<void> {
 
     const result = await processSessionFile(inputPath, redactedPath, reportPath, redactor);
 
+    if (!localEntry && !remoteEntry) processedNew++;
+    else processedChanged++;
+    if (result.hasSecretRedactions) {
+      sessionsWithSecretRedactions++;
+    }
+
     localManifest.set(file, {
       file,
       source_file: inputPath,
       source_hash: sourceHash,
+      redaction_key: redactionKey,
       redacted_hash: result.redactedHash,
       entry_count: result.entryCount,
       findings: result.findings,
       lines_with_findings: result.linesWithFindings,
     });
     processed++;
-    totalFindings += result.findings;
   }
 
   const keptEntries = [...localManifest.values()]
@@ -117,11 +122,12 @@ export async function runCollect(options: CollectOptions): Promise<void> {
   writeJsonlFile(localManifestPath, keptEntries);
 
   console.log();
-  console.log(`${bold("Processed:")} ${green(String(processed))}`);
-  console.log(`${bold("Skipped local unchanged:")} ${skippedLocal}`);
-  console.log(`${bold("Skipped remote unchanged:")} ${skippedRemote}`);
-  console.log(`${bold("Total findings:")} ${totalFindings}`);
-  console.log(`${bold("Local manifest:")} ${localManifestPath}`);
+  console.log();
+  console.log(bold("Redaction"));
+  console.log(`  ${bold("Processed sessions:")} ${green(String(processed))}`);
+  console.log(`  ${bold("New sessions:")} ${processedNew}`);
+  console.log(`  ${bold("Changed sessions:")} ${processedChanged}`);
+  console.log(`  ${bold("Sessions with secret redactions:")} ${sessionsWithSecretRedactions}`);
 
   const reviewOptions: ReviewOptions = {
     workspace: options.workspace,
@@ -134,6 +140,10 @@ export async function runCollect(options: CollectOptions): Promise<void> {
     session: options.session,
   };
   await runReview(reviewOptions);
+}
+
+function createRedactionKey(sourceHash: string, secretsHash: string, noImages: boolean): string {
+  return `v${REDACTION_VERSION}:${sourceHash}:${secretsHash}:${noImages ? "no-images" : "keep-images"}`;
 }
 
 function findSessionDir(cwd: string): string {
@@ -150,7 +160,7 @@ async function processSessionFile(
   redactedPath: string,
   reportPath: string,
   redactor: Redactor,
-): Promise<{ redactedHash: string; entryCount: number; findings: number; linesWithFindings: number }> {
+): Promise<{ redactedHash: string; entryCount: number; findings: number; linesWithFindings: number; hasSecretRedactions: boolean }> {
   const input = fs.createReadStream(inputPath, { encoding: "utf-8" });
   const reader = readline.createInterface({ input, crlfDelay: Infinity });
   const redactedStream = fs.createWriteStream(redactedPath, { encoding: "utf-8" });
@@ -161,6 +171,7 @@ async function processSessionFile(
   let entryCount = 0;
   let findingsCount = 0;
   let linesWithFindings = 0;
+  let hasSecretRedactions = false;
 
   for await (const line of reader) {
     lineNumber++;
@@ -181,6 +192,9 @@ async function processSessionFile(
       if (result.findings.length > 0) {
         linesWithFindings++;
         findingsCount += result.findings.length;
+        if (result.findings.some((f) => f.detector === "literal-secret" || f.detector === "secret-pattern")) {
+          hasSecretRedactions = true;
+        }
         appendReportLine(reportStream, {
           line_number: lineNumber,
           entry_type: typeof event.type === "string" ? event.type : undefined,
@@ -215,6 +229,7 @@ async function processSessionFile(
     entryCount,
     findings: findingsCount,
     linesWithFindings,
+    hasSecretRedactions,
   };
 }
 

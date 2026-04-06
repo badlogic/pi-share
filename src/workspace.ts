@@ -104,9 +104,11 @@ export function parseRemoteManifestEntry(value: unknown): RemoteManifestEntry | 
   if (typeof value.file !== "string") return undefined;
   if (typeof value.source_hash !== "string") return undefined;
   if (typeof value.redacted_hash !== "string") return undefined;
+  if (value.redaction_key !== undefined && typeof value.redaction_key !== "string") return undefined;
   return {
     file: value.file,
     source_hash: value.source_hash,
+    redaction_key: typeof value.redaction_key === "string" ? value.redaction_key : undefined,
     redacted_hash: value.redacted_hash,
   };
 }
@@ -116,6 +118,7 @@ export function parseLocalManifestEntry(value: unknown): LocalManifestEntry | un
   if (typeof value.file !== "string") return undefined;
   if (typeof value.source_file !== "string") return undefined;
   if (typeof value.source_hash !== "string") return undefined;
+  if (typeof value.redaction_key !== "string") return undefined;
   if (typeof value.redacted_hash !== "string") return undefined;
   if (typeof value.entry_count !== "number") return undefined;
   if (typeof value.findings !== "number") return undefined;
@@ -124,6 +127,7 @@ export function parseLocalManifestEntry(value: unknown): LocalManifestEntry | un
     file: value.file,
     source_file: value.source_file,
     source_hash: value.source_hash,
+    redaction_key: value.redaction_key,
     redacted_hash: value.redacted_hash,
     entry_count: value.entry_count,
     findings: value.findings,

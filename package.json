@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/fix-shebang.mjs && chmod +x dist/index.js",
-    "check": "tsgo --noEmit && node --experimental-strip-types src/index.ts --help >/dev/null && node --experimental-strip-types src/index.ts init --help >/dev/null && node --experimental-strip-types src/index.ts collect --help >/dev/null && node --experimental-strip-types src/index.ts review --help >/dev/null && node --experimental-strip-types src/index.ts upload --help >/dev/null"
+    "check": "tsgo --noEmit && node --experimental-strip-types src/index.ts --help >/dev/null && node --experimental-strip-types src/index.ts init --help >/dev/null && node --experimental-strip-types src/index.ts collect --help >/dev/null && node --experimental-strip-types src/index.ts review --help >/dev/null && node --experimental-strip-types src/index.ts upload --help >/dev/null && node --experimental-strip-types src/index.ts reject --help >/dev/null && node --experimental-strip-types src/index.ts list --help >/dev/null && node --experimental-strip-types src/index.ts grep --help >/dev/null"
   },
   "dependencies": {},
   "devDependencies": {
