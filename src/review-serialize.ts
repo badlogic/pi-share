@@ -6,6 +6,8 @@ import type { JsonObject, JsonValue } from "./types.ts";
 import { REVIEW_CHUNK_CHAR_LIMIT, REVIEW_JSON_VALUE_MAX_CHARS, REVIEW_TOOL_RESULT_MAX_CHARS } from "./types.ts";
 import { isRecord } from "./workspace.ts";
 
+const CHUNK_CONTINUATION_PREFIX = "[continued]\n";
+
 export async function splitIntoReviewChunks(sessionFile: string, chunkDir: string): Promise<string[]> {
   fs.rmSync(chunkDir, { recursive: true, force: true });
   fs.mkdirSync(chunkDir, { recursive: true });
@@ -31,15 +33,18 @@ export async function splitIntoReviewChunks(sessionFile: string, chunkDir: strin
     const blocks = serializeEntryForReview(parsed as JsonObject);
     for (const block of blocks) {
       if (!block) continue;
-      const next = `${block}\n\n`;
-      if (current.length > 0 && current.length + next.length > REVIEW_CHUNK_CHAR_LIMIT) {
-        const file = path.join(chunkDir, `${String(chunkIndex).padStart(3, "0")}.txt`);
-        fs.writeFileSync(file, current);
-        chunkFiles.push(file);
-        chunkIndex++;
-        current = "";
+      const pieces = splitBlockForChunkLimit(block, REVIEW_CHUNK_CHAR_LIMIT - 2);
+      for (const piece of pieces) {
+        const next = `${piece}\n\n`;
+        if (current.length > 0 && current.length + next.length > REVIEW_CHUNK_CHAR_LIMIT) {
+          const file = path.join(chunkDir, `${String(chunkIndex).padStart(3, "0")}.txt`);
+          fs.writeFileSync(file, current);
+          chunkFiles.push(file);
+          chunkIndex++;
+          current = "";
+        }
+        current += next;
       }
-      current += next;
     }
   }
 
@@ -273,4 +278,23 @@ function stringifyJson(value: JsonValue | undefined): string {
 function truncateForReview(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n\n[... ${text.length - maxChars} more characters truncated]`;
+}
+
+function splitBlockForChunkLimit(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text];
+
+  const pieces: string[] = [];
+  let remaining = text;
+  let first = true;
+
+  while (remaining.length > 0) {
+    const prefix = first ? "" : CHUNK_CONTINUATION_PREFIX;
+    const budget = prefix.length < maxChars ? maxChars - prefix.length : maxChars;
+    const piece = remaining.slice(0, budget);
+    pieces.push(prefix.length < maxChars ? `${prefix}${piece}` : piece);
+    remaining = remaining.slice(budget);
+    first = false;
+  }
+
+  return pieces;
 }

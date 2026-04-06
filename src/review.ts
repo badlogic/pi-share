@@ -559,11 +559,19 @@ function createReviewPrompt(chunkIndex: number, chunkCount: number, hasImages: b
 }
 
 function parseChunkReviewResult(text: string): ChunkReviewResult | undefined {
-  const cleaned = extractJsonObject(text);
-  if (!cleaned) return undefined;
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    const candidate = extractBalancedJsonObject(text, start);
+    if (!candidate) continue;
+    const parsed = parseChunkReviewCandidate(candidate);
+    if (parsed) return parsed;
+  }
 
+  return undefined;
+}
+
+function parseChunkReviewCandidate(text: string): ChunkReviewResult | undefined {
   try {
-    const parsed = JSON.parse(cleaned) as unknown;
+    const parsed = JSON.parse(text) as unknown;
     if (!isRecord(parsed)) return undefined;
     if (!isAboutProject(parsed.about_project)) return undefined;
     if (!isShareable(parsed.shareable)) return undefined;
@@ -606,11 +614,43 @@ function isMissedSensitiveData(value: unknown): value is MissedSensitiveData {
   return value === "yes" || value === "no" || value === "maybe";
 }
 
-function extractJsonObject(text: string): string | undefined {
-  const firstBrace = text.indexOf("{");
-  const lastBrace = text.lastIndexOf("}");
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return undefined;
-  return text.slice(firstBrace, lastBrace + 1);
+function extractBalancedJsonObject(text: string, start: number): string | undefined {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+
+    if (ch !== "}") continue;
+
+    depth -= 1;
+    if (depth === 0) return text.slice(start, i + 1);
+    if (depth < 0) return undefined;
+  }
+
+  return undefined;
 }
 
 function aggregateChunkReviews(chunks: SessionReviewFile["chunks"]): ChunkReviewResult {

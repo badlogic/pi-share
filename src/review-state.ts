@@ -3,6 +3,8 @@ import type { SessionReviewFile } from "./types.ts";
 import { REVIEW_CHUNK_CHAR_LIMIT, REVIEW_PROMPT_VERSION } from "./types.ts";
 import { isRecord, sha256File, sha256Text } from "./workspace.ts";
 
+const REVIEW_PIPELINE_VERSION = 1;
+
 export function loadReviewFile(filePath: string): SessionReviewFile | undefined {
   if (!fs.existsSync(filePath)) return undefined;
   try {
@@ -45,6 +47,7 @@ export function computeReviewKey(
     model,
     thinking,
     denyHash,
+    pipelineVersion: REVIEW_PIPELINE_VERSION,
     promptVersion: REVIEW_PROMPT_VERSION,
     chunkCharLimit: REVIEW_CHUNK_CHAR_LIMIT,
   }));
