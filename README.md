@@ -177,6 +177,59 @@ Output per session includes:
 - `flagged_parts`: `[{ reason, evidence }]`
 - `summary`
 
+Enum values:
+
+- `about_project`
+  - `yes`: clearly about the target OSS project
+  - `no`: clearly unrelated to the target OSS project
+  - `mixed`: contains both project-related and unrelated/private content
+- `shareable`
+  - `yes`: fit to publish publicly
+  - `no`: should not be published
+  - `manual_review`: borderline or uncertain, upload should not proceed automatically
+- `missed_sensitive_data`
+  - `no`: no likely missed sensitive data found
+  - `maybe`: possible missed sensitive data, but uncertain
+  - `yes`: likely missed sensitive data found
+
+Review sidecars are JSON files with this shape:
+
+```json
+{
+  "file": "2026-04-04T16-43-06-494Z_aed55f07.jsonl",
+  "context_files": ["/abs/path/to/README.md", "/abs/path/to/AGENTS.md"],
+  "context_hashes": {"/abs/path/to/README.md": "sha256:..."},
+  "provider": "openai-codex",
+  "model": "gpt-5.4",
+  "redacted_hash": "sha256:...",
+  "review_key": "sha256:...",
+  "prompt_version": 4,
+  "chunk_count": 2,
+  "chunk_char_limit": 500000,
+  "chunks": [
+    {
+      "chunk_index": 1,
+      "chunk_file": "/abs/path/to/review-chunks/.../001.txt",
+      "chars": 123456,
+      "result": {
+        "about_project": "yes",
+        "shareable": "manual_review",
+        "missed_sensitive_data": "maybe",
+        "flagged_parts": [{"reason": "...", "evidence": "..."}],
+        "summary": "..."
+      }
+    }
+  ],
+  "aggregate": {
+    "about_project": "yes",
+    "shareable": "manual_review",
+    "missed_sensitive_data": "maybe",
+    "flagged_parts": [{"chunk_index": 1, "reason": "...", "evidence": "..."}],
+    "summary": "..."
+  }
+}
+```
+
 ### `review`
 
 `review` reruns the LLM step only on already-redacted sessions.
@@ -239,6 +292,28 @@ If any session containing private content is marked `shareable=yes`, add it to `
 ```
 
 Workspaces are incremental. Re-running `collect` or `review` reuses matching outputs.
+
+## Workspace file formats
+
+- `workspace.json`: workspace config
+  ```json
+  {"cwd":"/path/to/project","repo":"user/dataset","noImages":false}
+  ```
+- `manifest.local.jsonl`: one line per locally known session
+  ```json
+  {"file":"2026-04-04T16-43-06-494Z_....jsonl","source_file":"/abs/path/to/session.jsonl","source_hash":"sha256:...","redacted_hash":"sha256:...","entry_count":123,"findings":7,"lines_with_findings":5}
+  ```
+- `remote-manifest.jsonl`: cached copy of the remote dataset manifest
+- `reports/<session>.report.jsonl`: deterministic findings, one line per original JSONL line with findings
+  ```json
+  {"line_number":42,"entry_type":"message","entry_id":"abc123","findings":[{"detector":"literal-secret","severity":"critical","jsonPath":"$.message.content[0].text","replacement":"[REDACTED_SECRET_1]","count":1}]}
+  ```
+- `review/<session>.review.json`: LLM review result for one session
+  ```json
+  {"file":"...jsonl","context_files":["README.md"],"redacted_hash":"sha256:...","review_key":"sha256:...","prompt_version":4,"aggregate":{"about_project":"yes","shareable":"yes","missed_sensitive_data":"no","flagged_parts":[],"summary":"..."}}
+  ```
+- `reject.txt`: one rejected session filename per line
+- `images/`: extracted preserved images. Image filenames encode session file, source line, image index, and content hash prefix.
 
 ## Dataset layout
 
