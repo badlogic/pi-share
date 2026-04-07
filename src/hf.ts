@@ -55,10 +55,14 @@ export async function downloadDatasetTextFile(repo: string, filePath: string): P
 }
 
 export async function uploadDatasetFolder(repo: string, localDir: string, commitTitle: string): Promise<void> {
+  const files = fs.readdirSync(localDir).map((name) => ({
+    path: name,
+    content: new Blob([fs.readFileSync(path.join(localDir, name))]),
+  }));
   await uploadFiles({
     repo: datasetRepo(repo),
     accessToken: requireHfAccessToken(),
-    files: [pathToFileURL(localDir)],
+    files,
     commitTitle,
   });
 }
