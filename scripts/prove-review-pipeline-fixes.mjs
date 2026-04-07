@@ -285,8 +285,8 @@ async function proveParserAndReviewKey(modules) {
   logStep("Proving schema-aware JSON selection and pipeline-versioned review keys through the CLI");
 
   const { computeDenyHash, computeReviewKey, hashContextFiles } = modules.reviewStateModule;
-  const { sha256Text } = modules.workspaceModule;
-  const { REVIEW_CHUNK_CHAR_LIMIT, REVIEW_PROMPT_VERSION } = modules.typesModule;
+  const { sha256File, sha256Text } = modules.workspaceModule;
+  const { REVIEW_CHUNK_CHAR_LIMIT, REVIEW_PROMPT_VERSION, TRUFFLEHOG_REPORT_SUFFIX } = modules.typesModule;
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-share-hf-review-proof-"));
 
@@ -325,6 +325,22 @@ async function proveParserAndReviewKey(modules) {
         },
       };
       writeFile(redactedPath, `${JSON.stringify(sessionEntry)}\n`);
+      const redactedHash = await sha256File(redactedPath);
+      writeFile(
+        path.join(workspaceDir, "reports", `${scenario.sessionName}${TRUFFLEHOG_REPORT_SUFFIX}`),
+        `${JSON.stringify({
+          file: scenario.sessionName,
+          redacted_hash: redactedHash,
+          findings: [],
+          summary: {
+            findings: 0,
+            verified: 0,
+            unverified: 0,
+            unknown: 0,
+            top_detectors: [],
+          },
+        }, null, 2)}\n`,
+      );
 
       const fakeOutput = scenario.outputLines.join("\n");
       assert(legacyParseChunkReviewResult(fakeOutput) === undefined, `Legacy parser should fail for scenario: ${scenario.name}`);
