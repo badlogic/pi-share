@@ -559,14 +559,16 @@ function createReviewPrompt(chunkIndex: number, chunkCount: number, hasImages: b
 }
 
 function parseChunkReviewResult(text: string): ChunkReviewResult | undefined {
+  let parsedResult: ChunkReviewResult | undefined;
+
   for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
     const candidate = extractBalancedJsonObject(text, start);
     if (!candidate) continue;
     const parsed = parseChunkReviewCandidate(candidate);
-    if (parsed) return parsed;
+    if (parsed) parsedResult = parsed;
   }
 
-  return undefined;
+  return parsedResult;
 }
 
 function parseChunkReviewCandidate(text: string): ChunkReviewResult | undefined {

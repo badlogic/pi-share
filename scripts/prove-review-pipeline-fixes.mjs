@@ -64,6 +64,144 @@ function legacyParseChunkReviewResult(text) {
   }
 }
 
+function firstSchemaValidParseChunkReviewResult(text) {
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    const candidate = extractBalancedJsonObject(text, start);
+    if (!candidate) continue;
+    const parsed = parseChunkReviewCandidate(candidate);
+    if (parsed) return parsed;
+  }
+
+  return undefined;
+}
+
+function parseChunkReviewResult(text) {
+  let parsedResult;
+
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    const candidate = extractBalancedJsonObject(text, start);
+    if (!candidate) continue;
+    const parsed = parseChunkReviewCandidate(candidate);
+    if (parsed) parsedResult = parsed;
+  }
+
+  return parsedResult;
+}
+
+function parseChunkReviewCandidate(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+    if (!["yes", "no", "mixed"].includes(parsed.about_project)) return undefined;
+    if (!["yes", "no", "manual_review"].includes(parsed.shareable)) return undefined;
+    if (!["yes", "no", "maybe"].includes(parsed.missed_sensitive_data)) return undefined;
+    if (typeof parsed.summary !== "string") return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractBalancedJsonObject(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+
+    if (ch !== "}") continue;
+
+    depth -= 1;
+    if (depth === 0) return text.slice(start, i + 1);
+    if (depth < 0) return undefined;
+  }
+
+  return undefined;
+}
+
+function createReviewPayload(summary, overrides = {}) {
+  return JSON.stringify({
+    about_project: "yes",
+    shareable: "yes",
+    missed_sensitive_data: "no",
+    flagged_parts: [],
+    summary,
+    ...overrides,
+  });
+}
+
+function parserScenarioDefinitions() {
+  return [
+    {
+      name: "earlier irrelevant JSON before the real payload",
+      sessionName: "2026-04-06T00-00-00-000Z_irrelevant-json.jsonl",
+      outputLines: [
+        'prefix {"foo":"bar"} middle text',
+        createReviewPayload("accepted payload after irrelevant JSON"),
+      ],
+      expectedFirstSummary: "accepted payload after irrelevant JSON",
+      expectedLastSummary: "accepted payload after irrelevant JSON",
+      expectedShareable: "yes",
+      expectedMissedSensitiveData: "no",
+    },
+    {
+      name: "earlier schema-valid example before the final payload",
+      sessionName: "2026-04-06T00-00-01-000Z_schema-example.jsonl",
+      outputLines: [
+        'prefix {"foo":"bar"} middle text',
+        createReviewPayload("example only", {
+          about_project: "no",
+          shareable: "manual_review",
+          missed_sensitive_data: "maybe",
+        }),
+        createReviewPayload("accepted valid payload"),
+      ],
+      expectedFirstSummary: "example only",
+      expectedLastSummary: "accepted valid payload",
+      expectedShareable: "yes",
+      expectedMissedSensitiveData: "no",
+    },
+    {
+      name: "later blocking payload overrides an earlier permissive payload",
+      sessionName: "2026-04-06T00-00-02-000Z_later-blocking.jsonl",
+      outputLines: [
+        createReviewPayload("early permissive answer"),
+        createReviewPayload("final answer blocks for possible secrets", {
+          shareable: "manual_review",
+          missed_sensitive_data: "maybe",
+          flagged_parts: [{ reason: "possible secret", evidence: "token-like string" }],
+        }),
+      ],
+      expectedFirstSummary: "early permissive answer",
+      expectedLastSummary: "final answer blocks for possible secrets",
+      expectedShareable: "manual_review",
+      expectedMissedSensitiveData: "maybe",
+    },
+  ];
+}
+
 function legacyChunkSession(blocks, limit) {
   const chunks = [];
   let current = "";
@@ -153,9 +291,11 @@ async function proveParserAndReviewKey(modules) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-share-hf-review-proof-"));
 
   try {
+    const scenarios = parserScenarioDefinitions();
     const projectDir = path.join(tempRoot, "project");
     const workspaceDir = path.join(tempRoot, "workspace");
     const fakeBinDir = path.join(tempRoot, "bin");
+    const fakeCounterPath = path.join(tempRoot, "pi-call-count");
 
     fs.mkdirSync(projectDir, { recursive: true });
     fs.mkdirSync(path.join(workspaceDir, "redacted"), { recursive: true });
@@ -175,36 +315,53 @@ async function proveParserAndReviewKey(modules) {
       `${JSON.stringify({ cwd: projectDir, repo: "example/proof-dataset" }, null, 2)}\n`,
     );
 
-    const sessionName = "2026-04-06T00-00-00-000Z_proof.jsonl";
-    const redactedPath = path.join(workspaceDir, "redacted", sessionName);
-    const sessionEntry = {
-      type: "message",
-      message: {
-        role: "user",
-        content: "Review parser proof",
-      },
-    };
-    writeFile(redactedPath, `${JSON.stringify(sessionEntry)}\n`);
+    for (const scenario of scenarios) {
+      const redactedPath = path.join(workspaceDir, "redacted", scenario.sessionName);
+      const sessionEntry = {
+        type: "message",
+        message: {
+          role: "user",
+          content: `Review parser proof: ${scenario.name}`,
+        },
+      };
+      writeFile(redactedPath, `${JSON.stringify(sessionEntry)}\n`);
 
-    const fakePiPath = path.join(fakeBinDir, "pi");
-    writeFile(
-      fakePiPath,
-      [
-        "#!/bin/sh",
-        "if [ \"$1\" = \"--help\" ]; then",
-        "  echo 'fake pi help'",
-        "  exit 0",
-        "fi",
-        "cat <<'EOF'",
-        "prefix {\"foo\":\"bar\"} middle text",
-        '{"about_project":"yes","shareable":"yes","missed_sensitive_data":"no","flagged_parts":[],"summary":"accepted valid payload"}',
-        "EOF",
-      ].join("\n"),
-      0o755,
-    );
+      const fakeOutput = scenario.outputLines.join("\n");
+      assert(legacyParseChunkReviewResult(fakeOutput) === undefined, `Legacy parser should fail for scenario: ${scenario.name}`);
+      assert(firstSchemaValidParseChunkReviewResult(fakeOutput)?.summary === scenario.expectedFirstSummary, `First-match schema parsing should match the expected first valid payload for scenario: ${scenario.name}`);
+      assert(parseChunkReviewResult(fakeOutput)?.summary === scenario.expectedLastSummary, `Current parser should match the expected last valid payload for scenario: ${scenario.name}`);
+    }
 
-    const fakeOutput = 'prefix {"foo":"bar"} middle text\n{"about_project":"yes","shareable":"yes","missed_sensitive_data":"no","flagged_parts":[],"summary":"accepted valid payload"}';
-    assert(legacyParseChunkReviewResult(fakeOutput) === undefined, "Legacy parser should fail on output that contains an earlier irrelevant JSON object");
+    const fakePiScriptLines = [
+      "#!/bin/sh",
+      "if [ \"$1\" = \"--help\" ]; then",
+      "  echo 'fake pi help'",
+      "  exit 0",
+      "fi",
+      `counter_file=${JSON.stringify(fakeCounterPath)}`,
+      'count="0"',
+      'if [ -f "$counter_file" ]; then',
+      '  count=$(cat "$counter_file")',
+      "fi",
+      'count=$((count + 1))',
+      'printf "%s" "$count" > "$counter_file"',
+      'case "$count" in',
+    ];
+    for (let index = 0; index < scenarios.length; index++) {
+      const scenario = scenarios[index];
+      fakePiScriptLines.push(`  ${index + 1})`);
+      fakePiScriptLines.push("    cat <<'EOF'");
+      fakePiScriptLines.push(...scenario.outputLines);
+      fakePiScriptLines.push("EOF");
+      fakePiScriptLines.push("    ;;");
+    }
+    fakePiScriptLines.push("  *)");
+    fakePiScriptLines.push('    echo "unexpected fake pi invocation count: $count" >&2');
+    fakePiScriptLines.push("    exit 1");
+    fakePiScriptLines.push("    ;;");
+    fakePiScriptLines.push("esac");
+
+    writeFile(path.join(fakeBinDir, "pi"), fakePiScriptLines.join("\n"), 0o755);
 
     const env = {
       ...process.env,
@@ -227,8 +384,6 @@ async function proveParserAndReviewKey(modules) {
         "medium",
         "--parallel",
         "1",
-        "--session",
-        sessionName,
         readmePath,
         agentsPath,
       ],
@@ -238,13 +393,17 @@ async function proveParserAndReviewKey(modules) {
       },
     );
 
-    const reviewPath = path.join(workspaceDir, "review", `${sessionName}.review.json`);
-    const reviewFile = JSON.parse(fs.readFileSync(reviewPath, "utf8"));
+    for (const scenario of scenarios) {
+      const reviewPath = path.join(workspaceDir, "review", `${scenario.sessionName}.review.json`);
+      const reviewFile = JSON.parse(fs.readFileSync(reviewPath, "utf8"));
 
-    assert(reviewFile.aggregate.summary === "accepted valid payload", "The CLI review should extract the later schema-valid JSON payload");
-    assert(reviewFile.aggregate.shareable === "yes", "The accepted payload should propagate through aggregate.shareable");
-    assert(reviewFile.chunks.length === 1, "The proof session should review as a single chunk");
+      assert(reviewFile.aggregate.summary === scenario.expectedLastSummary, `The CLI review should keep the expected final payload for scenario: ${scenario.name}`);
+      assert(reviewFile.aggregate.shareable === scenario.expectedShareable, `The CLI review should keep the expected shareable value for scenario: ${scenario.name}`);
+      assert(reviewFile.aggregate.missed_sensitive_data === scenario.expectedMissedSensitiveData, `The CLI review should keep the expected missed_sensitive_data value for scenario: ${scenario.name}`);
+      assert(reviewFile.chunks.length === 1, `The proof session should review as a single chunk for scenario: ${scenario.name}`);
+    }
 
+    const reviewFile = JSON.parse(fs.readFileSync(path.join(workspaceDir, "review", `${scenarios[0].sessionName}.review.json`), "utf8"));
     const contextHashes = await hashContextFiles([readmePath, agentsPath]);
     const denyHash = computeDenyHash([]);
     const currentReviewKey = computeReviewKey(
@@ -267,9 +426,9 @@ async function proveParserAndReviewKey(modules) {
     }));
 
     assert(reviewFile.review_key === currentReviewKey, "The generated review sidecar should use the current pipeline-versioned cache key");
-    assert(reviewFile.review_key !== legacyReviewKey, "The current review key should differ from the legacy pre-pipeline-version cache key");
+    assert(reviewFile.review_key !== legacyReviewKey, "The current review key should differ from the legacy pre-pipeline-version key");
 
-    process.stdout.write("parser proof: review CLI accepted the schema-valid payload after an earlier irrelevant JSON object\n");
+    process.stdout.write(`parser proof: validated ${scenarios.length} parser scenarios, including irrelevant JSON, schema-valid example output, and a later blocking payload\n`);
     process.stdout.write("review-key proof: generated sidecar key differs from the legacy pre-pipeline-version key\n");
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
